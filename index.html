@@ -344,6 +344,23 @@
 .rec-controls button{min-width:150px;}
 .rec-error{margin-top:10px;padding:11px 13px;border-radius:12px;background:rgba(174,62,62,.09);color:#8d3030;font-weight:700;font-size:.86rem;display:none;}
 
+
+/* Master access hub */
+#view-master{display:none;min-height:100vh;background:var(--bg);padding:24px 16px 110px;}
+.master-shell{max-width:980px;margin:0 auto;display:grid;gap:18px;}
+.master-hero,.master-group{background:var(--surface);border-radius:26px;padding:22px;box-shadow:var(--shadow-out);}
+.master-hero h1{margin:0 0 8px;color:var(--text);font-size:2rem;}
+.master-hero p{margin:0;color:var(--text-2);line-height:1.6;}
+.master-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px;}
+.master-card{border:0;border-radius:20px;padding:18px;text-align:left;background:var(--surface);box-shadow:4px 4px 8px var(--clay-d),-4px -4px 8px var(--clay-l);cursor:pointer;color:var(--text);font-family:inherit;}
+.master-card strong{display:block;font-size:1rem;margin-bottom:5px;}
+.master-card span{display:block;font-size:.82rem;color:var(--text-2);line-height:1.45;}
+.master-card:hover{transform:translateY(-1px);}
+.master-topbar{display:flex;justify-content:space-between;gap:12px;align-items:center;}
+.master-back{display:none;position:fixed;z-index:9999;right:18px;bottom:18px;border:0;border-radius:999px;padding:12px 16px;background:var(--green);color:white;font:700 .88rem/1 inherit;box-shadow:0 8px 22px rgba(0,0,0,.2);cursor:pointer;}
+@media(max-width:760px){.master-grid{grid-template-columns:1fr 1fr;}}
+@media(max-width:520px){.master-grid{grid-template-columns:1fr;}.master-hero h1{font-size:1.65rem;}}
+
 </style>
 </head>
 <body>
@@ -362,6 +379,30 @@
     </form>
   </div>
 </div>
+
+
+<div id="view-master">
+  <div class="master-shell">
+    <section class="master-hero">
+      <div class="master-topbar">
+        <div>
+          <h1>Master Access</h1>
+          <p>Choose a profile to open its assigned KNEWBIE experience. Use <strong>Return to Master Hub</strong> to switch profiles without signing out.</p>
+        </div>
+        <button class="ghost" type="button" onclick="doLogout()">Log out</button>
+      </div>
+    </section>
+    <section class="master-group">
+      <h2 style="margin:0;">Students</h2>
+      <div class="master-grid" id="masterStudentGrid"></div>
+    </section>
+    <section class="master-group">
+      <h2 style="margin:0;">Staff & Administration</h2>
+      <div class="master-grid" id="masterStaffGrid"></div>
+    </section>
+  </div>
+</div>
+<button id="masterBackBtn" class="master-back" type="button" onclick="returnToMasterHub()">← Return to Master Hub</button>
 
 <!-- ============ STUDENT VIEWS ============ -->
 
@@ -1058,6 +1099,7 @@ guided:[
 independent:{prompt:"After reading a short scripture passage, explain its main idea in your own words. Then answer one follow-up question about why the verse matters.",support:["This scripture teaches that...","This means...","One important idea is...","Keep the explanation simple and clear."],model:"This scripture teaches that faith should lead to action. We show faith by what we choose to do.",telegramTag:"Session 5 · Mission 10 — Scripture Explanation",completion:"Your scripture explanation is ready for Teacher review."}};
 
 const USERS = {
+  'master@eslearning.test': { name:'KELBRIC Master', greetingName:'Master', role:'master' },
   'teacher@eslearning.test': { name:'Jaden Gonzales', role:'teacher' },
   'admin@eslearning.test':   { name:'Program Admin', role:'admin' },
   'student1@eslearning.test':{ name:'Maria Reyes', role:'student', track:'Mock Court — Law', programSessions:20, missions:{1:SESSION_1,2:SESSION_2,3:SESSION_3} },
@@ -1165,6 +1207,7 @@ const MISSION_CATALOG = [
 ];
 
 let currentUser = null, currentEmail = null;
+let masterSession = false;
 let sessionMissionNum = null;
 let S = null, stageIndex = 0, wcIndex = 0;
 let explanationVisited = new Set(), explanationActive = -1;
@@ -1173,18 +1216,62 @@ function stagesForMission(){ return S && S.explanation ? ['mission','explain','v
 function ui(key, fallback){ return currentUser && currentUser.ui && currentUser.ui[key] ? currentUser.ui[key] : fallback; }
 
 /* ================= LOGIN / ROUTING ================= */
+function hideAllViews(){
+  ['view-login','view-master','view-elder-welcome','view-student','view-session','view-staff','view-admin'].forEach((id)=>{
+    const el=document.getElementById(id); if(el) el.style.display='none';
+  });
+}
 function enterAccount(email){
   const acct = USERS[email];
   if(!acct) return false;
   currentUser = acct; currentEmail = email;
-  document.getElementById('view-login').style.display = 'none';
-  document.body.classList.toggle('legacy', acct.role === 'teacher' || acct.role === 'admin');
-  if(acct.role === 'student') openStudentHome();
+  hideAllViews();
+  document.body.classList.toggle('legacy', acct.role === 'teacher' || acct.role === 'admin' || acct.role === 'master');
+  if(acct.role === 'master'){ masterSession=true; openMasterHub(); }
+  else if(acct.role === 'student') openStudentHome();
   else if(acct.role === 'teacher') openStaff();
   else if(acct.role === 'admin') openAdmin();
+  updateMasterBackButton();
   return true;
 }
 function quickFill(email){ return enterAccount(email); }
+
+function openMasterHub(){
+  stopActiveCapture();
+  hideAllViews();
+  currentUser=USERS['master@eslearning.test'];
+  currentEmail='master@eslearning.test';
+  document.body.classList.add('legacy');
+  const students=Object.entries(USERS).filter(([email,u])=>u.role==='student');
+  const staff=Object.entries(USERS).filter(([email,u])=>u.role==='teacher'||u.role==='admin');
+  const sgrid=document.getElementById('masterStudentGrid');
+  const agrid=document.getElementById('masterStaffGrid');
+  sgrid.innerHTML=students.map(([email,u])=>'<button class="master-card" type="button" onclick="masterOpenProfile(\''+email+'\')"><strong>'+u.name+(u.nativeName?' '+u.nativeName:'')+'</strong><span>'+u.track+'</span></button>').join('');
+  agrid.innerHTML=staff.map(([email,u])=>'<button class="master-card" type="button" onclick="masterOpenProfile(\''+email+'\')"><strong>'+u.name+'</strong><span>'+(u.role==='teacher'?'Teacher dashboard':'Program administration')+'</span></button>').join('');
+  document.getElementById('view-master').style.display='block';
+  updateMasterBackButton();
+  window.scrollTo(0,0);
+}
+function masterOpenProfile(email){
+  if(!masterSession) return;
+  const acct=USERS[email]; if(!acct || acct.role==='master') return;
+  currentUser=acct; currentEmail=email;
+  hideAllViews();
+  document.body.classList.toggle('legacy', acct.role==='teacher'||acct.role==='admin');
+  if(acct.role==='student') openStudentHome();
+  else if(acct.role==='teacher') openStaff();
+  else if(acct.role==='admin') openAdmin();
+  updateMasterBackButton();
+}
+function returnToMasterHub(){
+  if(!masterSession) return;
+  openMasterHub();
+}
+function updateMasterBackButton(){
+  const btn=document.getElementById('masterBackBtn');
+  if(!btn) return;
+  btn.style.display = masterSession && currentUser && currentUser.role!=='master' ? 'block' : 'none';
+}
 async function doLogin(event){
   if(event) event.preventDefault();
   const username = String(document.getElementById('loginUsername').value || '').trim();
@@ -1207,12 +1294,13 @@ async function doLogin(event){
 function doLogout(){
   stopActiveCapture();
   fetch('/api/logout',{method:'POST'}).catch(()=>{});
-  currentUser = null; currentEmail = null;
+  currentUser = null; currentEmail = null; masterSession = false;
   document.body.classList.remove('legacy');
-  ['view-login','view-elder-welcome','view-student','view-session','view-staff','view-admin'].forEach((id)=>{
+  ['view-login','view-master','view-elder-welcome','view-student','view-session','view-staff','view-admin'].forEach((id)=>{
     document.getElementById(id).style.display = 'none';
   });
   document.getElementById('view-login').style.display = 'flex';
+  updateMasterBackButton();
   const f=document.getElementById('loginForm'); if(f) f.reset();
   const e=document.getElementById('loginError'); if(e) e.textContent='';
 }
@@ -1220,7 +1308,7 @@ function doLogout(){
 /* ================= STUDENT ================= */
 
 function showElderWelcome(){
-  ['view-login','view-student','view-session','view-staff','view-admin'].forEach((id)=>{ const el=document.getElementById(id); if(el) el.style.display='none'; });
+  ['view-login','view-master','view-student','view-session','view-staff','view-admin'].forEach((id)=>{ const el=document.getElementById(id); if(el) el.style.display='none'; });
   document.getElementById('view-elder-welcome').style.display = 'block';
   window.scrollTo(0,0);
 }
