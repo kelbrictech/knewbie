@@ -328,6 +328,22 @@
 @media(max-width:820px){.elder-hero{grid-template-columns:1fr}.elder-preview,.elder-focus-wrap{grid-template-columns:repeat(2,1fr);}}
 @media(max-width:520px){.elder-preview,.elder-focus-wrap{grid-template-columns:1fr}.elder-copy h1{font-size:1.72rem;}}
 
+
+/* Real camera recording */
+.recording-preview{
+  display:none;
+  width:100%;
+  max-height:420px;
+  margin:14px 0 12px;
+  border-radius:18px;
+  background:#0d1511;
+  object-fit:contain;
+}
+.rec-note{margin:10px 0 0;color:var(--text-2);font-size:.86rem;line-height:1.5;}
+.rec-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px;}
+.rec-controls button{min-width:150px;}
+.rec-error{margin-top:10px;padding:11px 13px;border-radius:12px;background:rgba(174,62,62,.09);color:#8d3030;font-weight:700;font-size:.86rem;display:none;}
+
 </style>
 </head>
 <body>
@@ -1189,6 +1205,7 @@ async function doLogin(event){
   return false;
 }
 function doLogout(){
+  stopActiveCapture();
   fetch('/api/logout',{method:'POST'}).catch(()=>{});
   currentUser = null; currentEmail = null;
   document.body.classList.remove('legacy');
@@ -1253,6 +1270,7 @@ function renderStudentHome(){
   }
 }
 function backToStudentHome(){
+  stopActiveCapture();
   document.getElementById('view-session').style.display = 'none';
   document.getElementById('view-student').style.display = 'block';
   renderStudentHome();
@@ -1274,7 +1292,7 @@ function renderStagebar(){
   const bar = document.getElementById('stagebar'); bar.innerHTML = '';
   const stages = stagesForMission(); for(let i=0;i<stages.length;i++){ const s=document.createElement('span'); if(i<=stageIndex) s.className='done'; bar.appendChild(s); }
 }
-function goTo(i){ const movingForward=i>stageIndex; stageIndex=i; if(movingForward && stagesForMission()[i]==='wordcheck' && !wordCheckCompleted) wcIndex=0; renderStagebar(); render(); window.scrollTo(0,0); }
+function goTo(i){ stopActiveCapture(); const movingForward=i>stageIndex; stageIndex=i; if(movingForward && stagesForMission()[i]==='wordcheck' && !wordCheckCompleted) wcIndex=0; renderStagebar(); render(); window.scrollTo(0,0); }
 function render(){
   const el = document.getElementById('stage');
   const stages = stagesForMission();
@@ -1397,7 +1415,15 @@ function independentHTML(){
     '<ul class="support">'+ind.support.map((s)=>'<li>'+formatRich(s)+'</li>').join('')+'</ul>'+
     '<div class="togglebar"><span></span><button class="togglebtn" id="modeltoggle">'+ui('showModel','Show model')+'</button></div>'+
     '<div class="model" id="modelbox" style="display:none;">'+formatRich(ind.model)+'</div>'+
-    '<div class="rec-controls"><button id="recbtn">'+ui('startRecording','Start Recording')+'</button></div>'+
+    '<p class="rec-note">When you start, your browser will ask for <strong>camera and microphone access</strong>. KNEWBIE records only after you allow access.</p>'+
+    '<video id="recordPreview" class="recording-preview" playsinline muted></video>'+
+    '<div class="rec-controls">'+
+      '<button id="recbtn">'+ui('startRecording','Start Recording')+'</button>'+
+      '<button id="playbtn" class="ghost" type="button" style="display:none;">'+ui('playRecording','Play Recording')+'</button>'+
+      '<button id="saveRecordingBtn" class="ghost" type="button" style="display:none;">Save to Device</button>'+
+      '<button id="rerecordbtn" class="ghost" type="button" style="display:none;">Record Again</button>'+
+    '</div>'+
+    '<div class="rec-error" id="recError"></div>'+
     '<div class="status" id="statusrow"></div><div id="tgsection"></div><div id="completesection"></div></div>';
 }
 const STATUS_STEPS = ['Requested','Recording','Download Initiated','Student Confirmed Saved','Student Marked Sent','Teacher Confirmed Received'];
@@ -1408,6 +1434,68 @@ function renderStatus(){
   const steps = currentUser && currentUser.ui ? STATUS_STEPS_KO : STATUS_STEPS;
   row.innerHTML = steps.slice(0,statusIdx+1).map((s)=>'<span class="active">'+s+'</span>').join('');
 }
+
+let activeCaptureStream = null;
+let activeRecorder = null;
+let activeRecordingUrl = null;
+
+function stopActiveCapture(){
+  try{
+    if(activeRecorder && activeRecorder.state==='recording') activeRecorder.stop();
+  }catch(_){}
+  if(activeCaptureStream){
+    activeCaptureStream.getTracks().forEach((track)=>track.stop());
+    activeCaptureStream = null;
+  }
+  activeRecorder = null;
+}
+
+function preferredVideoMimeType(){
+  if(!window.MediaRecorder) return '';
+  const types = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+    'video/webm'
+  ];
+  return types.find((type)=>MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function recordingFilename(blob){
+  const type=(blob && blob.type)||'';
+  const ext=type.includes('mp4')?'mp4':'webm';
+  const who=(currentUser && (currentUser.greetingName||currentUser.name)||'student').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'');
+  const date=new Date().toISOString().slice(0,10);
+  return 'KNEWBIE-'+who+'-Mission-'+sessionMissionNum+'-'+date+'.'+ext;
+}
+
+async function saveBlobToDevice(blob){
+  const filename=recordingFilename(blob);
+  if(window.showSaveFilePicker){
+    const ext=filename.endsWith('.mp4')?'.mp4':'.webm';
+    const mime=blob.type || (ext==='.mp4'?'video/mp4':'video/webm');
+    const handle=await window.showSaveFilePicker({
+      suggestedName:filename,
+      types:[{description:'KNEWBIE recording',accept:{[mime]:[ext]}}]
+    });
+    const writable=await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return {mode:'picker',filename};
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+  return {mode:'download',filename};
+}
+
 function wireStage(stage){
   const next = document.getElementById('next');
   if(next && !(stage==='vocab' && S.vocabGroups)) next.addEventListener('click', ()=>{ const stages = stagesForMission(); if(stageIndex<stages.length-1) goTo(stageIndex+1); });
@@ -1527,35 +1615,200 @@ function wireStage(stage){
       box.style.display = showing ? 'none' : 'block';
       this.textContent = showing ? ui('showModel','Show model') : ui('hideModel','Hide model');
     });
+
     statusIdx = 0;
+    let recordedBlob = null;
+    let chunks = [];
     const recbtn = document.getElementById('recbtn');
-    let seqIdx = 0;
-    recbtn.addEventListener('click', function(){
-      seqIdx++;
-      if(seqIdx===1){ statusIdx=1; recbtn.textContent=ui('stopRecording','Stop Recording'); }
-      else if(seqIdx===2){ statusIdx=1; recbtn.textContent=ui('playRecording','Play Recording'); }
-      else if(seqIdx===3){
-        statusIdx=2; recbtn.textContent=ui('saveFinal','Save Final Recording');
-        document.getElementById('tgsection').innerHTML = '<p class="instr" style="margin-top:14px;">'+ui('saveInstruction','KNEWBIE will start the download to your device. Confirm that you can find the file before leaving this page.')+'</p><button class="ghost" id="savefinal">'+ui('confirmSaved','Confirm saved and continue')+'</button>';
-        document.getElementById('savefinal').addEventListener('click', function(){
-          statusIdx=3; renderStatus();
-          document.getElementById('tgsection').innerHTML = '<div class="tgbox">'+ui('telegramInstruction','Send the saved recording to your Teacher through Telegram.')+' '+ui('includeMessage','Include this message')+': <strong>'+S.independent.telegramTag+'</strong>.</div><button class="cta" id="marksent">'+ui('markSent','Mark as sent')+'</button>';
-          document.getElementById('marksent').addEventListener('click', function(){
-            statusIdx=5; renderStatus();
-            // This is the real cross-role write: the student's action
-            // becomes visible to the teacher immediately, no refresh
-            // trick needed — same shared-state principle as the real backend.
-            DB.assignments[currentEmail][sessionMissionNum].recordingStatus = 'student_marked_sent';
-            notify('teacher@eslearning.test', currentUser.name + ' submitted Mission ' + sessionMissionNum + ' recording for review.');
-            document.getElementById('tgsection').innerHTML='';
-            document.getElementById('completesection').innerHTML =
-              '<div class="done-msg"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>'+
-              '<p><strong>'+S.independent.completion+'</strong></p></div>';
-          });
-        });
+    const playbtn = document.getElementById('playbtn');
+    const savebtn = document.getElementById('saveRecordingBtn');
+    const rerecordbtn = document.getElementById('rerecordbtn');
+    const preview = document.getElementById('recordPreview');
+    const errbox = document.getElementById('recError');
+
+    const showError = (message)=>{
+      errbox.textContent = message;
+      errbox.style.display = 'block';
+    };
+    const clearError = ()=>{
+      errbox.textContent = '';
+      errbox.style.display = 'none';
+    };
+    const clearRecordingUrl = ()=>{
+      if(activeRecordingUrl){
+        URL.revokeObjectURL(activeRecordingUrl);
+        activeRecordingUrl = null;
       }
+    };
+    const resetRecorderUI = ()=>{
+      stopActiveCapture();
+      clearRecordingUrl();
+      recordedBlob = null;
+      chunks = [];
+      preview.pause();
+      preview.removeAttribute('src');
+      preview.srcObject = null;
+      preview.style.display = 'none';
+      preview.muted = true;
+      preview.controls = false;
+      recbtn.style.display = '';
+      recbtn.disabled = false;
+      recbtn.textContent = ui('startRecording','Start Recording');
+      playbtn.style.display = 'none';
+      savebtn.style.display = 'none';
+      rerecordbtn.style.display = 'none';
+      document.getElementById('tgsection').innerHTML = '';
+      document.getElementById('completesection').innerHTML = '';
+      statusIdx = 0;
+      clearError();
       renderStatus();
+    };
+
+    recbtn.addEventListener('click', async function(){
+      clearError();
+
+      if(activeRecorder && activeRecorder.state==='recording'){
+        recbtn.disabled = true;
+        recbtn.textContent = 'Finishing...';
+        activeRecorder.stop();
+        return;
+      }
+
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        showError('Camera recording is not supported by this browser. Open KNEWBIE in a current browser over HTTPS.');
+        return;
+      }
+      if(!window.MediaRecorder){
+        showError('Video recording is not supported by this browser.');
+        return;
+      }
+
+      try{
+        statusIdx = 0;
+        renderStatus();
+        recbtn.disabled = true;
+        recbtn.textContent = 'Requesting camera...';
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},
+          audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+        });
+        activeCaptureStream = stream;
+        chunks = [];
+        recordedBlob = null;
+
+        preview.style.display = 'block';
+        preview.controls = false;
+        preview.muted = true;
+        preview.srcObject = stream;
+        await preview.play().catch(()=>{});
+
+        const mimeType = preferredVideoMimeType();
+        activeRecorder = mimeType ? new MediaRecorder(stream,{mimeType}) : new MediaRecorder(stream);
+
+        activeRecorder.addEventListener('dataavailable',(event)=>{
+          if(event.data && event.data.size>0) chunks.push(event.data);
+        });
+
+        activeRecorder.addEventListener('stop',()=>{
+          const finalType = activeRecorder && activeRecorder.mimeType ? activeRecorder.mimeType : (chunks[0] && chunks[0].type) || 'video/webm';
+          recordedBlob = new Blob(chunks,{type:finalType});
+          if(activeCaptureStream){
+            activeCaptureStream.getTracks().forEach((track)=>track.stop());
+            activeCaptureStream = null;
+          }
+          activeRecorder = null;
+
+          clearRecordingUrl();
+          activeRecordingUrl = URL.createObjectURL(recordedBlob);
+          preview.srcObject = null;
+          preview.src = activeRecordingUrl;
+          preview.muted = false;
+          preview.controls = true;
+          preview.load();
+
+          statusIdx = 2;
+          recbtn.style.display = 'none';
+          recbtn.disabled = false;
+          playbtn.style.display = '';
+          savebtn.style.display = '';
+          rerecordbtn.style.display = '';
+          document.getElementById('tgsection').innerHTML =
+            '<p class="instr" style="margin-top:14px;">Review your recording. When you are satisfied, use <strong>Save to Device</strong>. Your browser may show a save picker or place the file in Downloads.</p>';
+          renderStatus();
+        });
+
+        activeRecorder.addEventListener('error',()=>{
+          stopActiveCapture();
+          recbtn.disabled = false;
+          recbtn.textContent = ui('startRecording','Start Recording');
+          showError('Recording stopped because the browser reported an error. Please try again.');
+        });
+
+        activeRecorder.start(1000);
+        statusIdx = 1;
+        recbtn.disabled = false;
+        recbtn.textContent = ui('stopRecording','Stop Recording');
+        renderStatus();
+      }catch(err){
+        stopActiveCapture();
+        recbtn.disabled = false;
+        recbtn.textContent = ui('startRecording','Start Recording');
+        if(err && (err.name==='NotAllowedError' || err.name==='PermissionDeniedError')){
+          showError('Camera or microphone access was denied. Allow camera and microphone permission for this site, then try again.');
+        }else if(err && err.name==='NotFoundError'){
+          showError('No usable camera or microphone was found on this device.');
+        }else{
+          showError('KNEWBIE could not start the camera. Check browser permissions and try again.');
+        }
+      }
     });
+
+    playbtn.addEventListener('click', async ()=>{
+      if(!recordedBlob) return;
+      try{
+        preview.currentTime = 0;
+        await preview.play();
+      }catch(_){}
+    });
+
+    rerecordbtn.addEventListener('click', resetRecorderUI);
+
+    savebtn.addEventListener('click', async ()=>{
+      if(!recordedBlob) return;
+      clearError();
+      savebtn.disabled = true;
+      const originalText = savebtn.textContent;
+      savebtn.textContent = 'Saving...';
+      try{
+        const saved = await saveBlobToDevice(recordedBlob);
+        statusIdx = 3;
+        renderStatus();
+        savebtn.textContent = 'Saved';
+        document.getElementById('tgsection').innerHTML =
+          '<div class="tgbox"><strong>'+saved.filename+'</strong><br>'+ui('telegramInstruction','Send the saved recording to your Teacher through Telegram.')+' '+ui('includeMessage','Include this message')+': <strong>'+S.independent.telegramTag+'</strong>.</div>'+
+          '<button class="cta" id="marksent">'+ui('markSent','Mark as sent')+'</button>';
+        document.getElementById('marksent').addEventListener('click', function(){
+          statusIdx = 5;
+          renderStatus();
+          DB.assignments[currentEmail][sessionMissionNum].recordingStatus = 'student_marked_sent';
+          notify('teacher@eslearning.test', currentUser.name + ' submitted Mission ' + sessionMissionNum + ' recording for review.');
+          document.getElementById('tgsection').innerHTML='';
+          document.getElementById('completesection').innerHTML =
+            '<div class="done-msg"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>'+
+            '<p><strong>'+S.independent.completion+'</strong></p></div>';
+        });
+      }catch(err){
+        savebtn.disabled = false;
+        savebtn.textContent = originalText;
+        if(err && err.name==='AbortError'){
+          showError('Save was cancelled. Your recording is still available on this page.');
+        }else{
+          showError('KNEWBIE could not save the recording. Please try again.');
+        }
+      }
+    });
+
     renderStatus();
   }
 }
