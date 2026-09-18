@@ -4,13 +4,14 @@ export default async (request: Request, context: any) => {
   if (!contentType.includes("text/html")) return response;
 
   const html = await response.text();
-  if (html.includes("/save-to-device-001.js")) return new Response(html, response);
+  const scripts = [
+    '<script src="/elder-preach-my-gospel-vocab.js"></script>',
+    '<script src="/save-to-device-001.js"></script>'
+  ];
+  const missing = scripts.filter((tag)=>!html.includes(tag));
+  if (!missing.length) return new Response(html, response);
 
-  const patched = html.replace(
-    "</body>",
-    '<script src="/save-to-device-001.js"></script></body>'
-  );
-
+  const patched = html.replace("</body>", missing.join("") + "</body>");
   const headers = new Headers(response.headers);
   headers.delete("content-length");
 
