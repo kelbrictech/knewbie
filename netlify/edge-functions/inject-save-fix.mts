@@ -6,6 +6,7 @@ export default async (request: Request, context: any) => {
   const html = await response.text();
   const scripts = [
     '<script src="/elder-preach-my-gospel-vocab.js"></script>',
+    '<script src="/student6/mission-reinforcement.js"></script>',
     '<script src="/save-to-device-001.js"></script>'
   ];
   const missing = scripts.filter((tag)=>!html.includes(tag));
